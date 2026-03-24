@@ -1,0 +1,20 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "pplab-cron"
+main = "src/index.js"
+compatibility_date = "2025-03-24"
+
+# Scheduled events (Cron jobs)
+# This runs every day at 8:00 AM (local UTC+8 / 0:00 UTC)
+[triggers]
+crons = ["0 0 * * *"]
+
+# Keep these secrets for Supabase integration
+# Use `wrangler secret put <NAME>` to set these in production
+# SUPABASE_URL = ""
+# SUPABASE_SERVICE_ROLE_KEY = ""
+
+# Read products.txt as a text module
+[[rules]]
+type = "Text"
+globs = ["**/*.txt"]
+fallthrough = true
