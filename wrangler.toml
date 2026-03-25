@@ -3,10 +3,16 @@ name = "pplab-cron"
 main = "src/index.js"
 compatibility_date = "2025-03-24"
 
+# Cloudflare Observability & Logs
+[observability]
+[observability.logs]
+enabled = true
+invocation_logs = true
+
 # Scheduled events (Cron jobs)
-# This runs every day at 8:00 AM (local UTC+8 / 0:00 UTC)
+# This runs every day at 19:15 (local UTC+8 / 11:15 UTC)
 [triggers]
-crons = ["0 0 * * *"]
+crons = ["30 11 * * *"]
 
 # Keep these secrets for Supabase integration
 # Use `wrangler secret put <NAME>` to set these in production

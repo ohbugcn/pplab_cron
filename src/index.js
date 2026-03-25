@@ -20,10 +20,13 @@ export default {
 	async scheduled(event, env, ctx) {
 		console.log(`Cron triggered at: ${new Date().toISOString()}`);
 
-		// 1. Get products from imported text and pick a random one
-		const productList = productsData.split('\n').map(s => s.trim()).filter(s => s.length > 0);
-		const currentProduct = productList[Math.floor(Math.random() * productList.length)];
-		console.log(`Searching for product: ${currentProduct}`);
+		// 1. Get products from imported text and shuffle them
+		const productList = productsData.split('\n')
+			.map(s => s.trim())
+			.filter(s => s.length > 0 && s.toLowerCase() !== 'products');
+		
+		// Shuffle array to pick different candidates each run
+		const shuffledProducts = productList.sort(() => Math.random() - 0.5);
 
 		const rssFeeds = [
 			"https://www.nature.com/nm/current_issue/rss/index.html",
@@ -35,75 +38,87 @@ export default {
 			"https://www.cell.com/cell-metabolism/rss",
 		];
 
-		try {
-			// 2. Fetch from RSS (Latest News)
-			let articles = [];
-			for (const url of rssFeeds) {
-				console.log(`Fetching RSS: ${url}`);
-				try {
-					const items = await this.fetchAndParseRSS(url);
-					articles = articles.concat(items.filter(article => {
-						const content = (article.title + article.snippet).toLowerCase();
-						return content.includes(currentProduct.toLowerCase());
-					}));
-				} catch (err) {
-					console.warn(`Skipping RSS source ${url}: ${err.message}`);
-				}
-			}
+		const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+		let articleProcessed = false;
+		
+		// 2. Try products one by one until we successfully process ONE article
+		// Limit to 5 products per run to avoid Cloudflare CPU timeouts
+		const maxTryProducts = 5; 
+		const productsToTry = shuffledProducts.slice(0, maxTryProducts);
 
-			// 3. Fetch from PubMed (Professional Literature)
-			console.log(`Searching PubMed for: ${currentProduct}`);
+		for (const currentProduct of productsToTry) {
+			console.log(`Attempting to find articles for: ${currentProduct}`);
+			
 			try {
-				const pubMedArticles = await this.searchAndFetchPubMed(currentProduct);
-				articles = articles.concat(pubMedArticles);
-			} catch (err) {
-				console.error(`PubMed search failed: ${err.message}`);
-			}
+				// 3. Fetch from RSS and PubMed for this product
+				let candidateArticles = [];
+				
+				// Search RSS
+				for (const url of rssFeeds) {
+					try {
+						const items = await this.fetchAndParseRSS(url);
+						candidateArticles = candidateArticles.concat(items.filter(article => {
+							const content = (article.title + article.snippet).toLowerCase();
+							return content.includes(currentProduct.toLowerCase());
+						}));
+					} catch (rssErr) {
+						console.error(`RSS Error (${url}):`, rssErr.message);
+					}
+				}
 
-			console.log(`Total candidate articles found: ${articles.length}`);
+				// Search PubMed
+				try {
+					const pubMedArticles = await this.searchAndFetchPubMed(currentProduct);
+					candidateArticles = candidateArticles.concat(pubMedArticles);
+				} catch (pmErr) {
+					console.error(`PubMed Error:`, pmErr.message);
+				}
 
-			const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-
-			let processedCount = 0;
-			for (const article of articles) {
-				// 4. Deduplication check
-				const isDuplicate = await this.isArticleDuplicate(article.link, supabase);
-				if (isDuplicate) {
-					console.log(`Skipping duplicate: ${article.link}`);
+				if (candidateArticles.length === 0) {
+					console.log(`No articles found for "${currentProduct}". Trying next product...`);
 					continue;
 				}
 
-				console.log(`New article found: ${article.title}. Summarizing...`);
+				console.log(`Found ${candidateArticles.length} candidates for "${currentProduct}". Checking for new content...`);
 
-				// 5. Summarize with DeepSeek
-				const summary = await this.summarizeWithDeepSeek(currentProduct, article.title, article.snippet, env);
+				// 4. Process the first non-duplicate article
+				for (const article of candidateArticles) {
+					const isDuplicate = await this.isArticleDuplicate(article.link, supabase);
+					if (isDuplicate) {
+						continue;
+					}
 
-				// 6. Insert into Supabase
-				const { error } = await supabase
-					.from('blog')
-					.insert([{
-						content: summary,
-						tag: currentProduct,
-						url: article.link
-					}]);
+					console.log(`Processing new article: ${article.title}`);
+					const summary = await this.summarizeWithDeepSeek(currentProduct, article.title, article.snippet, env);
 
-				if (error) {
-					console.error(`Failed to insert article ${article.link}:`, error.message);
-				} else {
-					console.log(`Successfully stored summary for: ${article.title}`);
-					processedCount++;
-					// Process only one article per execution
-					break; 
+					const { error } = await supabase
+						.from('blog')
+						.insert([{
+							content: summary,
+							tag: currentProduct,
+							url: article.link
+						}]);
+
+					if (!error) {
+						console.log(`Successfully stored article for ${currentProduct}!`);
+						articleProcessed = true;
+						break; // Found and processed one, we are done
+					} else {
+						console.error(`Insert failed:`, error.message);
+					}
 				}
-			}
 
-			if (processedCount === 0) {
-				console.log(`No new articles were processed for "${currentProduct}" in this run.`);
+				if (articleProcessed) break; // Exit the product loop
+
+			} catch (error) {
+				console.error(`Error processing product "${currentProduct}":`, error.message);
 			}
-		} catch (error) {
-			console.error('Error in scheduled task:', error.message);
 		}
 
+		if (!articleProcessed) {
+			console.log(`Tried ${productsToTry.length} products but found no new relevant articles.`);
+		}
+		
 		console.log('Cron process completed.');
 	},
 
