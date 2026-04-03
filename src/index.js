@@ -3,7 +3,6 @@
  * This function is triggered by the cron jobs defined in wrangler.toml
  */
 
-import { createClient } from '@supabase/supabase-js';
 import productsData from '../products.txt';
 
 export default {
@@ -38,7 +37,6 @@ export default {
 			"https://www.cell.com/cell-metabolism/rss",
 		];
 
-		const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 		let articleProcessed = false;
 		
 		// 2. Try products one by one until we successfully process ONE article
@@ -83,7 +81,7 @@ export default {
 
 				// 4. Process the first non-duplicate article
 				for (const article of candidateArticles) {
-					const isDuplicate = await this.isArticleDuplicate(article.link, supabase);
+					const isDuplicate = await this.isArticleDuplicate(article.link, env);
 					if (isDuplicate) {
 						continue;
 					}
@@ -91,20 +89,16 @@ export default {
 					console.log(`Processing new article: ${article.title}`);
 					const summary = await this.summarizeWithDeepSeek(currentProduct, article.title, article.snippet, env);
 
-					const { error } = await supabase
-						.from('blog')
-						.insert([{
-							content: summary,
-							tag: currentProduct,
-							url: article.link
-						}]);
+					const result = await env.DB.prepare(
+						"INSERT INTO blog (title, content, url, tag) VALUES (?, ?, ?, ?)"
+					).bind(article.title, summary, article.link, currentProduct).run();
 
-					if (!error) {
+					if (result.success) {
 						console.log(`Successfully stored article for ${currentProduct}!`);
 						articleProcessed = true;
 						break; // Found and processed one, we are done
 					} else {
-						console.error(`Insert failed:`, error.message);
+						console.error(`Insert failed: D1 error`);
 					}
 				}
 
@@ -204,21 +198,18 @@ export default {
 	},
 
 	/**
-	 * Check if an article URL already exists in Supabase
+	 * Check if an article URL already exists in D1
 	 */
-	async isArticleDuplicate(url, supabase) {
-		const { data, error } = await supabase
-			.from('blog')
-			.select('url')
-			.eq('url', url)
-			.limit(1);
-
-		if (error) {
-			console.error('Deduplication check error:', error.message);
+	async isArticleDuplicate(url, env) {
+		try {
+			const result = await env.DB.prepare(
+				"SELECT url FROM blog WHERE url = ? LIMIT 1"
+			).bind(url).first();
+			return !!result;
+		} catch (err) {
+			console.error('Deduplication check error:', err.message);
 			return false;
 		}
-
-		return data.length > 0;
 	},
 
 	/**
@@ -230,27 +221,35 @@ export default {
 			return `# ${title}\n\n[AI Summary Placeholder] ${snippet.substring(0, 200)}...`;
 		}
 
-		const prompt = `You are a professional medical science writer. Based on the following article title and snippet, write a high-quality science popularization summary about the product: 【${product}】.
+		const prompt = `You are a world-class SEO content strategist and authoritative medical science writer. 
+Your objective is to create an exhaustive, SEO-optimized blog article about the product: 【${product}】.
 
-Requirements:
-1. Language: Use professional yet accessible **ENGLISH**.
-2. Format: The first line must be the article's full title in Markdown H1 format (e.g., # Article Title).
-3. Structure: You MUST use the following Markdown structure:
-   # [Original Title]
-   ### 1. Summary of Core Content
-   Briefly summarize the main research findings or core news points of the article.
-   ### 2. Advantages and Benefits
-   List the main strengths or positive impacts on health based on the article.
-   ### 3. Potential Risks and Shortcomings
-   List possible side effects, limitations, or risks based on the article.
-   ### 4. Precautions for Use
-   Provide professional health advice, contraindications, or details patients should note.
-4. Style: Ensure the content is accurate yet understandable for the general public.
-5. Length: Approximately 400-500 words.
+### SEO & Readability Guidelines:
+1. **Natural Keyword Integration**: Strategically place "${product}" and related LSI keywords (entities) to satisfy search intent.
+2. **Formatting for Scannability**: Use short paragraphs (2-4 sentences), bold high-impact sentences, and bullet points for lists.
+3. **E-E-A-T Excellence**: Write with deep expertise while maintaining an accessible, trustworthy tone for general readers.
+
+### Article Content & Structure:
+1. **Metadata Section (Top Only)**: 
+   - [SEO Meta Description]: A compelling 140-160 character hook including "${product}".
+2. **Markdown Body**:
+   - **H1**: A catchy, high-CTR and SEO-friendly title.
+   - **Key Takeaways**: Provide a 3-5 point bulleted summary (TL;DR) immediately following the H1.
+   - **Introduction**: A logical, hook-driven opening.
+   - **H2 Sections**: Use descriptive, keyword-rich subheadings for:
+     - ### 1. Scientific Breakthroughs: [Insightful Title]
+     - ### 2. Practical Health Benefits & Efficacy
+     - ### 3. Biological Safety & Clinical Considerations
+     - ### 4. Professional Usage Protocols & Warnings
+   - **Frequently Asked Questions (FAQ)**: 
+     - Create an FAQ section at the end with 3-4 high-value questions (e.g., "Is ${product} safe?", "How long to see results with ${product}?") and clear, concise answers.
+   - **Final Verdict**: A authoritative concluding statement.
+3. **Length**: 600-800 words of data-rich content.
 
 ---
-**Article Title**: ${title}
-**Snippet**: ${snippet}`;
+**Reference Data**:
+**Source Title**: ${title}
+**Reference Snippet**: ${snippet}`;
 
 		try {
 			const response = await fetch('https://api.deepseek.com/chat/completions', {
@@ -288,45 +287,6 @@ Requirements:
 			return new Response('Manual test triggered. Check Cloudflare Logs for detailed progress.');
 		}
 
-		// 2. Dynamic Sitemap (/sitemap.xml)
-		if (url.pathname === '/sitemap.xml') {
-			const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-			
-			// Fetch all article URLs from Supabase
-			const { data, error } = await supabase
-				.from('blog')
-				.select('url, created_at')
-				.order('created_at', { ascending: false });
-
-			if (error) {
-				return new Response('Error generating sitemap', { status: 500 });
-			}
-
-			// Generate XML
-			const baseUrl = url.origin;
-			const xml = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>${baseUrl}/</loc>
-    <changefreq>daily</changefreq>
-    <priority>1.0</priority>
-  </url>
-${data.map(item => `  <url>
-    <loc>${item.url}</loc>
-    <lastmod>${new Date(item.created_at || Date.now()).toISOString().split('T')[0]}</lastmod>
-    <changefreq>monthly</changefreq>
-    <priority>0.8</priority>
-  </url>`).join('\n')}
-</urlset>`;
-
-			return new Response(xml, {
-				headers: {
-					'Content-Type': 'application/xml; charset=utf-8',
-					'X-Content-Type-Options': 'nosniff'
-				}
-			});
-		}
-
-		return new Response('Worker is running. Visit /sitemap.xml to see indexed articles or ?test to trigger a manual sync.');
+		return new Response('Worker is running. Visit ?test to trigger a manual sync.');
 	},
 };

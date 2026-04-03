@@ -10,17 +10,17 @@ enabled = true
 invocation_logs = true
 
 # Scheduled events (Cron jobs)
-# This runs every day at 19:15 (local UTC+8 / 11:15 UTC)
+# This runs every day at 21:00 (local UTC+8 / 13:00 UTC)
 [triggers]
-crons = ["30 11 * * *"]
-
-# Keep these secrets for Supabase integration
-# Use `wrangler secret put <NAME>` to set these in production
-# SUPABASE_URL = ""
-# SUPABASE_SERVICE_ROLE_KEY = ""
+crons = ["0 13 * * *"]
 
 # Read products.txt as a text module
 [[rules]]
 type = "Text"
 globs = ["**/*.txt"]
 fallthrough = true
+
+[[d1_databases]]
+binding = "DB" # The binding name available in env.DB
+database_name = "pplab-db"
+database_id = "4b3eeaa4-7bb8-4ea7-8c36-7c9d20a7f10e"
